@@ -44,12 +44,31 @@ object Main extends App {
   // as well as db and/or network calls, so it would make a lot more sense to use some sort of non-blocking client
   val backend: SttpBackend[Identity, Any] = HttpClientSyncBackend()
 
-  run(numberOfQueryRuns).foreach(persistResults)
+
+  // we load the queryTerms once, since they do not change
+  def initQueryTerms() = {
+    logger.info("Init query terms")
+    val response = basicRequest
+      .get(testQueryTermUrl)
+      .response(asJson[List[QueryTermResponse]])
+      .send(backend)
+
+    response.body match {
+      case Left(error) =>
+        logger.error(error.getMessage)
+        Map.empty[String, Iterable[QueryTermResponse]]
+      case Right(terms) => processTerms(terms)
+    }
+  }
+
+  run(numberOfQueryRuns, initQueryTerms()).foreach(persistResults)
 
 
   private def persistResults(matchedTerms: Set[MatchedTerm]): Unit = {
     val filePath = Paths.get("src/main/resources/matched_terms.json")
     Files.createDirectories(filePath.getParent)
+
+    if(!Files.exists(filePath)) Files.createFile(filePath)
 
     val matchedSet = Files.readAllLines(filePath)
       .asScala
@@ -65,24 +84,12 @@ object Main extends App {
     }
   }
 
-  private def run(numberOfRuns: Int) = for {
+  private def run(numberOfRuns: Int, queryTerms: Map[String, Iterable[QueryTermResponse]]) = for {
     n <- (1 to numberOfRuns)
   } yield {
     logger.info(s"Starting run $n")
-    val response = basicRequest
-      .get(testQueryTermUrl)
-      .response(asJson[List[QueryTermResponse]])
-      .send(backend)
-
-    val queryTerms = response.body match {
-      case Left(error) =>
-        logger.error(error.getMessage)
-        Map.empty[String, Iterable[QueryTermResponse]]
-      case Right(terms) => processTerms(terms)
-    }
 
     val queryTermsById = queryTerms.values.flatten.groupBy(c => c.id)
-
     val alertsResponse = basicRequest
       .get(testAlertsUrl)
       .response(asJson[List[AlertTerms]])
